@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+# Written into the source tree by hatch-vcs at build time so an sdist carries its
+# version with no .git present. Generated, never committed.
+src/mailkube_django/_vcs_version.py
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.jscpd/
+.coverage
+htmlcov/
+coverage.xml
+
+# Secrets / local config
+.env

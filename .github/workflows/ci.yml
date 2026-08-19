@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  push:
+    # `develop` only, and `main` is absent on purpose. `develop` is the integration branch and is
+    # pushed to directly, so without this trigger a direct push would run nothing — `pull_request`
+    # alone does not cover it. `main` is covered instead by release.yml, which runs this whole
+    # workflow through `workflow_call` as its `ci-gate` job before releasing. Adding `main` here
+    # would put that gate run and a standalone push run in the same `ci-${{ github.ref }}`
+    # concurrency group, where one is cancelled — and the cancelled one is what the README's CI
+    # badge reports.
+    branches: [develop]
+  pull_request:
+  workflow_call: # so release.yml can gate on the full CI
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every Python `requires-python` allows, against both ends of the declared Django
+        # range. A version this package installs on but never runs on is a support claim
+        # nothing checks, and the person who finds out is the consumer whose resolver picks it.
+        python-version: ["3.12", "3.13", "3.14"]
+        django-version: ["5.2", "6.1"]
+        exclude:
+          # Django 5.2 predates Python 3.14 and does not claim it. The suite passes on the
+          # pair, but the framework version is its own matrix axis and a leg whose framework
+          # does not support its interpreter proves nothing about either.
+          - python-version: "3.14"
+            django-version: "5.2"
+    steps:
+      # fetch-depth: 0 is REQUIRED, not tidiness. The version is derived from the git tag
+      # by hatch-vcs at build time, and a shallow clone carries no tags, so the package
+      # would build as an unrelated 0.1.devN.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # The anymail extra is installed here so the full suite (and the coverage gate) runs.
+      # The zero-extra path gets its own job below.
+      - name: Install dependencies
+      # `--frozen` installs the committed `uv.lock` and fails rather than re-resolving, so
+      # every leg tests the same dependency set a contributor gets locally and a moved
+      # `pyproject.toml` cannot silently ship an unlocked resolution. The `floor` job below
+      # is the deliberate opposite and must stay unfrozen.
+        run: uv sync --frozen --python ${{ matrix.python-version }} --extra anymail
+
+      # pyproject declares only a floor, so pin the matrix version over it.
+      - name: Pin Django ${{ matrix.django-version }}
+        run: uv pip install "django==${{ matrix.django-version }}.*"
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy)
+        run: uv run mypy src
+
+      - name: Tests + coverage gate (pytest, 90% line+branch)
+        run: uv run pytest
+
+  zero-extra:
+    # The standalone backend promises to work with nothing but Django and the SDK.
+    # This job is what makes that a tested promise rather than a comment: it installs
+    # WITHOUT the anymail extra, so the Anymail tests skip themselves and any accidental
+    # top-level `import anymail` fails the build.
+    #
+    # The coverage gate is disabled here on purpose: anymail_backend.py is legitimately
+    # unreachable in this install shape, so the total would be meaningless. The `test` job
+    # above enforces the real 90% gate.
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 for the same reason as the `test` job: this one installs the package
+      # too, and hatch-vcs needs the tags to resolve a version.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install without the anymail extra
+        run: uv sync
+      - name: Assert django-anymail really is absent
+        run: |
+          uv run python -c "
+          import importlib.util, sys
+          sys.exit(0 if importlib.util.find_spec('anymail') is None else 1)
+          "
+      - name: Tests (standalone backend only)
+        run: uv run pytest --cov-fail-under=0
+
+  build:
+    # Publish-readiness gate. release.yml only builds AFTER the tag and the GitHub Release are
+    # already pushed, so a packaging or metadata failure there yields a tagged version with nothing
+    # on PyPI — unrecoverable without burning a version. Building on the PR path (and, through
+    # ci-gate, on `main`) is what makes that failure impossible to reach. See .rules/CI_GATES.md.
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 for the same reason as the `test` job: hatch-vcs derives the version from
+      # the tag, and a shallow clone would build an unrelated 0.1.devN.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Validate distribution metadata (twine)
+        run: uvx twine check --strict dist/*
+
+      # Asserts the OUTCOME of [tool.hatch.build.targets.sdist], not the list itself: a partial
+      # include list that still ships tests/ or CI config is worse than none, because it reads as
+      # "source only" while it is not.
+      - name: Assert the sdist ships source only
+        run: |
+          python3 -m tarfile -l dist/*.tar.gz > sdist.txt
+          cat sdist.txt
+          if grep -Eq '/(tests|examples|scripts|\.github|\.rules)/' sdist.txt; then
+            echo "::error::the sdist ships non-source directories — check [tool.hatch.build.targets.sdist]"
+            exit 1
+          fi
+
+  floor:
+    # The declared dependency lower bounds are otherwise fiction: every `test` leg installs the
+    # exact lockfile pins, so the `>=` constraints are never exercised and a floor that no longer
+    # works breaks only for the consumer whose resolver picks it. See .rules/CI_GATES.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # The floor is READ from `requires-python`, which is the one place it is declared. Writing it
+      # here too would make this job assert a floor the package does not actually claim, and the
+      # copy that goes stale is the one nothing reads: `requires-python` is what installers resolve
+      # against, so a mismatch means this gate passes while the published constraint is untested.
+      - name: Read the declared Python floor
+        run: |
+          floor="$(python3 -c "import re,tomllib;print(re.search(r'[0-9]+\.[0-9]+',tomllib.load(open('pyproject.toml','rb'))['project']['requires-python']).group())")"
+          echo "PYTHON_FLOOR=$floor" >> "$GITHUB_ENV"
+
+      # No --frozen: the point is to re-resolve away from the lockfile, down to the oldest version
+      # each declared floor allows. Pinned to the minimum supported Python for the same reason.
+      - name: Install the oldest allowed dependencies
+        run: uv sync --extra anymail --resolution lowest-direct --python "$PYTHON_FLOOR"
+
+      # --no-cov: this job proves the floors import and behave. Coverage is the `test` job's gate.
+      - name: Tests against the dependency floor
+        run: uv run pytest --no-cov
+
+  # There is deliberately no example-compilation job. This package ships no `examples/`: every entry
+  # point it exposes needs a host application before it can run, so runnable scripts would need one
+  # scaffolded first and would rot the moment it drifted. The wiring lives in README.md instead, and
+  # the tests are what keep it honest. See .rules/INTEGRATION_CONTRACT.md and .rules/CI_GATES.md.
+
+  dry:
+    # Language-agnostic duplication (DRY) gate — identical across every mailkube repo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+      - name: Copy-paste detection (jscpd)
+        run: npx --yes jscpd@4 --config .jscpd.json .
+
+  docs:
+    # Governance gate: every .rules/*.md must be indexed in AGENTS.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rule-index sync check
+        run: ./scripts/check-rule-index.sh

@@ -1,0 +1,75 @@
+name: Release
+
+# Conventional-Commits-driven release: one tag + one GitHub Release, then publish to PyPI
+# via OIDC Trusted Publishing (no long-lived tokens).
+#
+# NOTHING is committed back to `main`: the tag IS the version, and hatch-vcs reads it at
+# build time. See .rules/RELEASE.md.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci-gate:
+    # Release only proceeds if the full gated CI (test + dry + docs) is green.
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci-gate
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # push the tag, create the GitHub Release
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Creates and pushes the TAG and the GitHub Release, and nothing else.
+      # `commit: false` and `changelog: false` are what keep `main` untouched: a bot commit
+      # would be rejected by the branch ruleset, and github-actions[bot] cannot be added to a
+      # ruleset bypass list. `build: false` because the publish job below builds from the tag.
+      - name: Compute release (python-semantic-release)
+        id: release
+        uses: python-semantic-release/python-semantic-release@v10
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: false
+          changelog: false
+          build: false
+          tag: true
+          push: true
+
+  publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC for PyPI Trusted Publishing — no password/token stored
+    steps:
+      # fetch-depth: 0 so hatch-vcs can see the tag it is checked out at. With the default
+      # shallow fetch the build resolves no version and ships the wrong one.
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build distribution
+        run: uv build
+
+      - name: Publish to PyPI (OIDC Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:` — relies purely on OIDC. Register the Trusted Publisher on PyPI first:
+        # org=<github-org>, repo=<repo-slug>, workflow=release.yml, environment=pypi.
