@@ -61,7 +61,7 @@ dev = [
     # django-stubs' mypy plugin does not yet load under mypy 2.x (it fails with
     # "Error constructing plugin instance of NewSemanalDjangoPlugin"). Lift this pin once
     # django-stubs ships mypy 2 support.
-    "mypy>=1.10,<2",
+    "mypy>=1.10,<3",
     "ruff>=0.15.20",
     "django-stubs[compatible-mypy]>=5.0",
 ]
