@@ -7,7 +7,9 @@
 [![Django](https://img.shields.io/badge/django-5.2%2B-0C4B33)](pyproject.toml)
 [![Code of Conduct](https://img.shields.io/badge/Contributor%20Covenant-2.1-purple.svg)](CODE_OF_CONDUCT.md)
 
-Django email backend for mailkube.
+Django email backend for [mailkube](https://mailkube.com).
+
+Full product and API documentation: [docs.mailkube.com/sdks/django](https://docs.mailkube.com/sdks/django).
 
 ## Which backend?
 
