@@ -60,7 +60,7 @@ contexts to require:
 
 ```
 test (3.12, 5.2)   test (3.12, 6.1)   test (3.13, 5.2)   test (3.13, 6.1)   test (3.14, 6.1)
-zero-extra   build   floor   dry   docs   PR-title
+zero-extra   build   floor   dry   docs   dependency-audit   PR-title
 ```
 
 `PR-title` is the job *name* in `pr-title.yml`, not its id; GitHub matches the name. A matrix
